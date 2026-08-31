@@ -1,0 +1,71 @@
+name: Build /shows from noise-floor
+
+on:
+  schedule:
+    # Runs ~45 min after jjjeremyfisher/noise-floor's own daily 12:00 UTC
+    # scrape+deploy, so its published data is fresh by the time we fetch it.
+    - cron: "45 12 * * *"
+  workflow_dispatch: {} # trigger manually from the Actions tab
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-shows
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this site
+        uses: actions/checkout@v4
+
+      # Public repo — no token needed. Only the source is checked out here
+      # transiently to build it; nothing from it is committed to this repo,
+      # only the compiled output lands in /shows below.
+      - name: Checkout noise-floor source
+        uses: actions/checkout@v4
+        with:
+          repository: jjjeremyfisher/noise-floor
+          path: noise-floor-src
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        working-directory: noise-floor-src
+        run: npm ci
+
+      - name: Fetch already-published event data
+        # Reuses noise-floor's own daily scrape output rather than
+        # re-scraping (and re-needing its API key secrets) here.
+        run: |
+          mkdir -p noise-floor-src/public/data
+          curl -sf https://jjjeremyfisher.github.io/noise-floor/data/aggregate.json \
+            -o noise-floor-src/public/data/aggregate.json
+
+      - name: Build static export at /shows
+        working-directory: noise-floor-src
+        run: npm run build
+        env:
+          NEXT_BASE_PATH: /shows
+
+      - name: Replace /shows with the fresh build
+        run: |
+          rm -rf shows
+          mv noise-floor-src/out shows
+          rm -rf noise-floor-src
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add shows
+          if git diff --cached --quiet; then
+            echo "No changes to /shows — skipping commit."
+          else
+            git commit -m "Update /shows from noise-floor ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+            git push
+          fi
